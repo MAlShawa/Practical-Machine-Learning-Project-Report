@@ -1,0 +1,144 @@
+---
+title: "Practical_Machine_Learning_Project"
+author: "M.S."
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE) ##  suppress warning messages globally
+```
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. This project collected data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the project's website here: <http://groupware.les.inf.puc-rio.br/har>.
+ 
+## Overview
+
+The goal of this report is to build a predictive model to predict the manner in which the 6 participants did the exercise (this is given as the *classe* variable in the provided training dataset). The report shows how the predictive models were built, and how cross validation was used. It shows which predictive model is chosen, and what is the model's accuracy and expected out of sample error. Finally, the report presents the predicted *classe* values for a testing dataset that was never used in training of the chosen predictive model.
+
+
+## Setup the Environment 
+
+This section discusses the required libraries needed to run the R code listed in this report, and loaded to produce the results it shows. The listed code in this  section, also, loads the required datasets from the specified URLs, and performs a number of data cleaning tasks related to removing columns/variables: 1) with 90% missing values; 2) have no variability; or 3) useless to the analysis, such as user_names and timestamps raw columns.
+
+```{r setup-environment}
+# loading required libraries
+library(data.table) ; library(caret) ; library(corrplot) 
+library(rpart) ; library(rattle) ; library(randomForest) ; library(gbm)  
+
+trainData <- as.data.frame(fread("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", header=TRUE, na.strings=c("NA",  " ", "", "#DIV/0!")))
+testData  <- as.data.frame(fread("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", header=TRUE, na.strings=c("NA",  " ", "", "#DIV/0!")))
+```
+
+The dimensions of the provided original datasets for this project:
+
+| dataset | Number of observations (rows)  | Number of variables (Columns) |
+|:-:|:-:|:-:|
+| *trainData* | `r dim(trainData)[1]` | `r dim(trainData)[2]` |
+| *testData* | `r dim(testData)[1]` | `r dim(testData)[2]` |
+
+```{r data-cleaning}
+# clean datasets by removing columns/vars with 90% missing values, or no variability
+naColToRemove <- which(colSums(is.na(trainData))>0.9*nrow(trainData))                            
+trainDataCleaned <- trainData[, -naColToRemove]
+testDataCleaned <- testData[, -naColToRemove]
+NZV <- nearZeroVar(trainDataCleaned, saveMetrics = TRUE)
+trainDataCleaned <- trainDataCleaned[, !NZV$nzv]
+testDataCleaned <- testDataCleaned[, !NZV$nzv]
+trainDataCleaned <- trainDataCleaned[,-c(1:5)]      # remove user_name & raw timestamps cols
+trainDataCleaned$classe <- as.factor(trainDataCleaned$classe) # set classe as a factor 
+testDataCleaned <- testDataCleaned[,-c(1:5,59)]     # remove user_name & raw timestamps cols
+testing <- testDataCleaned                          # renaming the testDataCleaned
+```
+
+This makes the *testDataCleaned* and *testing* datasets have the following dimensions. The *testing* set does not include the *classe* variable/column, which the *testDataCleaned* has. Hence its variables count is less by one. This variable should be predicted by the chosen predictive model.
+
+| dataset | Number of observations (rows)  | Number of variables (Columns) |
+|:-:|:-:|:-:|
+| *trainDataCleaned* | `r dim(trainDataCleaned)[1]` | `r dim(trainDataCleaned)[2]` |
+| *testing (testDataCleaned)* | `r dim(testDataCleaned)[1]` | `r dim(testDataCleaned)[2]` |
+
+
+## Data Exploratory Analysis 
+
+A correlation analysis reveals that very few variables are correlated, as shown in Figure 1. The figure also shows the level of correlation among such variables.
+
+```{r corrplot, fig.height= 6.5}
+corrplot(cor(subset(trainDataCleaned, select = -c(classe))), method = 'square', order = 'FPC', type = 'lower', diag = FALSE, tl.col = "black", tl.cex = 0.5, title="Figure 1: Correlation between all variables in trainDataCleaned ",mar=c(0,0,1,0)) 
+```
+
+## Partitioning Training Set to Training and Validation Sets
+
+Cross-validation is one of the best practices of study design. It requires leaving the *testing* dataset for final testing of the predictive models, and not use it to train the models. This requires spiting the  *training* dataset (*trainDataCleaned*) to a *training* (70%) and a *validation* (30%) datasets. This step isolates the models' final testing (where the *testing* dataset will be used), and separates it, from the models' training activities, such as: training the models, predicting their outcomes, calculating their accuracy and error estimates, and finally choosing the best model. 
+
+```{r data-partition}
+set.seed(1357) # For reproducibility purposes
+inTrain <- createDataPartition(trainDataCleaned$classe, p = 0.70, list = FALSE)
+training <- trainDataCleaned[inTrain, ]
+validation <- trainDataCleaned[-inTrain, ]
+```
+| dataset | Number of observations (rows)  | Number of variables (Columns) |
+|:-:|:-:|:-:|
+| *training* | `r dim(training)[1]` | `r dim(training)[2]` |
+| *validation* | `r dim(validation)[1]` | `r dim(validation)[2]` |
+
+## Building Predictive Models
+Three predictive modeling methods were used to fit a predictive model for the *classe* variable. 
+
+#### 1) Building a Predictive Model based on the Classification and Regression Trees (CART) method
+```{r CORT-model}
+modelCART <- train(classe ~., data=training, method="rpart")
+predictCART <- predict(modelCART, validation)
+confusionMatrix(predictCART, validation$classe)
+fancyRpartPlot(modelCART$finalModel, sub="", main="Figure 2: Decision Tree for Classe Based on ModelCART")
+```
+
+#### 2) Building a Predictive Model based on the Random Forest method
+```{r RF-model}
+modelRF <- train(classe ~., data=training, method="rf", trcontrol = trainControl(method="cv", number=3))
+predictRF <- predict(modelRF, validation)
+confusionMatrix(predictRF, validation$classe)
+```
+
+#### 3) Building a Predictive Model based on the Gradient Boosting Machine (GBM) method
+```{r GBM-model}
+modelGBM <- train(classe ~., data=training, method="gbm", verbose = FALSE)
+predictGBM <- predict(modelGBM, validation)
+confusionMatrix(predictGBM, validation$classe)
+```
+
+## Evaluating the Predictive Models and Choosing the Best One
+
+The prediction accuracy of the models, as shown above:
+
+|  | Predictive Model | Method Used | Accuracy | 
+|:-:|:-:|:-:|:-:|
+| 1 | modelCART | Classification and Regression Trees (CART) | `r round(confusionMatrix(predictCART, validation$classe)$overall[1],4) * 100`% |
+| 2 | modelRF | Random Forest (RF) | `r round(confusionMatrix(predictRF, validation$classe)$overall[1],4) * 100`% |
+| 3 | modelGBM | Gradient Boosting Machine (GBM) | `r round(confusionMatrix(predictGBM, validation$classe)$overall[1],4) * 100`%| 
+
+Both the Random Forest model (modelRF) and the GBM model (modelGBM) provided high accuracy scores for predicting the *classe* variable in the *validation* dataset, after been trained using the *training* dataset. The CART model scored badly, as one can see from the results above. Therefore, modelRF and modelGBM both, equally, could be used to predict the *classe* variable in the testing test. In this report, **the predictive model built using the Random Forest method, modelRF, is chosen because its accuracy is slightly better, but more importantly because building it was less computationally demanding than the GBM model building**. it took less time to build modelRF than modelGBM.
+
+Further accuracy and error estimation analysis of the predictive model built using the random forest method, modelRF, was conducted. Details of modelRF's error estimates, in general (OBB) and per *classe*'s classes; and a plot of these error estimates versus the 500 model trees are provided here. 
+```{r RF-error-analysis}
+modelRF$finalModel
+plot(modelRF$finalModel, main="Figure 3: modelRF's Classes & OBB Error Rates vs. Decision Trees")
+lines(x = 1:500, y = modelRF$finalModel$err.rate[,1], col = "darkred", lty = 2, lwd = 2)
+legend("topright", legend = c(modelRF$finalModel$classes, "OBB"), col = c(1:length(modelRF$finalModel$classes), "darkred"), pch = c(19,19,19,19,19,15), title = "Classes & OBB", bty = "o")
+```
+
+Figure 3 displays plots of the relationship between modelRF's error estimates (for each class in the *classe*  variable and the generalized Out-of-Bag (OOB) error estimate) and the decision trees built and used by the Random Forest method to build modelRF. The plot shows that, initially, as more trees are added the error rates drops sharply. This is because the model benefits from combining multiple semi-independent individual decision trees, which reduces variance and improves the overall prediction accuracy. Then, the model's error curves flatten out, converged and stabilized. This indicates that adding more trees beyond this point no longer significantly improves the model's performance. 
+
+In addition, the modelRF\$finalModel results show the Out-of-Bag (OOB) error estimate, which is an unbiased estimate of the generalization error of how well the model will perform on new unseen data (including the *validation* dataset which is not used in the model building activity of modelRF) = 0.2%. 
+
+Finally, when the *validation*  dataset is used to predict the *classe* variable, modelRF performed as expected with the actual accuracy = `r round(confusionMatrix(predictRF, validation$classe)$overall[1],4) * 100`% , and the actual out of sample (training sample) error = `r round((1- confusionMatrix(predictRF, validation$classe)$overall[1]),4) * 100`%. 
+
+
+## Using the Selected Predictive Model on the Testing Dataset
+
+The predictive model built using the Random Forest method, modelRF, is used here to predict the values of the *classe* variable for each of the 20 observations (rows) in the *testing* set, downloaded and cleaned above. 
+
+```{r test-prediction}
+predict(modelRF, newdata = testing)
+```
